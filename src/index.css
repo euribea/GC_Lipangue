@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* pequeño estilo para verificar que el CSS carga */
+* { box-sizing: border-box; }
