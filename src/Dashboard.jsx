@@ -330,11 +330,11 @@ export default function Dashboard() {
                           ? fmtCLP(pagado)
                           : pagado > 0
                             ? fmtCLP(pagado)
-                            : (vencido ? "DB" : "—");
+                            : (vencido ? "Debe" : "—");
 
                         // Clase de fondo/colores para toda la celda
                         let bgClass = "bg-white text-gray-800 font-bold text-center";
-                        if (valor === "DB") {
+                        if (valor === "Debe") {
                           bgClass = "bg-red-500/80 text-white font-bold text-center";
                         } else if (valor === "—") {
                           bgClass = "bg-gray-100 text-gray-500 font-bold text-center";
