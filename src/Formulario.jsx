@@ -1,31 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
+import {
+  addIngreso, watchIngresos, updateIngreso, deleteIngreso,
+  addEgreso,  watchEgresos,  updateEgreso,  deleteEgreso
+} from "./lib/firebase";
 
 /*********************** Utilidades ************************/
 function parseMontoCLP(str){ if(typeof str==="number") return Math.round(str); const limpio=String(str).replace(/[^\d-]/g,""); return limpio?parseInt(limpio,10):0; }
 function formatCLP(n){ return new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(parseMontoCLP(n)); }
-function descargarCSV(nombre, filas){
-  if(!filas?.length) return;
-  const headers=Object.keys(filas[0]);
-  const esc=v=> '"' + String(v??"").replaceAll('"','""') + '"';
-  const body=filas.map(r=>headers.map(k=>esc(r[k])).join(",")).join("\n");
-  const csv=[headers.join(","),body].join("\n");
-  const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a'); a.href=url; a.download=nombre.endsWith('.csv')?nombre:nombre+'.csv'; a.click();
-  URL.revokeObjectURL(url);
-}
-  // ===== Helpers localStorage =====
-const getIngresos = () => {
-  try { const d = JSON.parse(localStorage.getItem("ingresos")||"[]"); return Array.isArray(d)? d : []; }
-  catch { return []; }
-};
-const setIngresos = (arr) => { try { localStorage.setItem("ingresos", JSON.stringify(arr)); } catch {} };
-
-const getEgresos = () => {
-  try { const d = JSON.parse(localStorage.getItem("egresos")||"[]"); return Array.isArray(d)? d : []; }
-  catch { return []; }
-};
-const setEgresos = (arr) => { try { localStorage.setItem("egresos", JSON.stringify(arr)); } catch {} };
 
 /*********************** Componente principal ************************/
 export default function FinanzasForm({ onAddIngreso, onAddEgreso }) {
@@ -114,7 +95,7 @@ function IngresoForm({ onAdd }) {
     return Object.keys(e).length===0;
   }
 
-  function onSubmit(ev){
+  async function onSubmit(ev){
     ev.preventDefault();
     if(!validar()) return;
 
@@ -123,7 +104,6 @@ function IngresoForm({ onAdd }) {
       .map(m=> ({ year:m.year, month:m.month, monto: parseMonto(mesMontos[keyMes(m.year,m.month)]||0) }));
 
     const ingreso = {
-      id: crypto.randomUUID?.() ?? String(Date.now()),
       fecha: form.fecha,
       parcela: String(form.parcela).trim(),
       nombre: form.nombre.trim(),
@@ -132,11 +112,7 @@ function IngresoForm({ onAdd }) {
       creadoEn: new Date().toISOString(),
     };
 
-    try {
-      const prev = JSON.parse(localStorage.getItem("ingresos")||"[]");
-      localStorage.setItem("ingresos", JSON.stringify([ingreso, ...prev]));
-    } catch {}
-
+    await addIngreso(ingreso); // <-- Firestore
     onAdd?.();
     setForm(f=> ({...f, parcela:"", nombre:"", monto:"", meses:[]}));
     setMesMontos({});
@@ -213,42 +189,37 @@ function IngresoForm({ onAdd }) {
   );
 }
 
-
-
 /*********************** Tabla Histórica de Ingresos ************************/
-// === TABLA DE INGRESOS (por ingreso, con Editar/Eliminar) ===
-function IngresosTabla({ refreshKey }) {
+function IngresosTabla() {
   const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
   const [data,setData]=useState([]);
-  const [editRow, setEditRow] = useState(null); // registro a editar (objeto o null)
+  const [editRow, setEditRow] = useState(null);
 
   const formatCLP = (n) =>
     new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0})
       .format(typeof n==="number" ? n : parseInt(String(n).replace(/[^\d-]/g,"")||"0",10));
 
   useEffect(()=>{
-    setData(getIngresos());
-  },[refreshKey]);
+    // Suscripción en tiempo real
+    const off = watchIngresos(setData);
+    return () => off && off();
+  },[]);
 
-  const filas = useMemo(()=>{
-    return data
-      .slice()
-      .sort((a,b)=> new Date(b.fecha)-new Date(a.fecha))
-      .map(i=>{
-        const meses = Array.isArray(i.detalleMeses) ? i.detalleMeses : [];
-        const etiqueta = meses
-          .slice().sort((a,b)=>(a.year-b.year)||(a.month-b.month))
-          .map(m=> `${MESES[m.month]} ${m.year}`)
-          .join(", ");
-        return { id:i.id, fecha:i.fecha, parcela:i.parcela, nombre:i.nombre, meses:etiqueta, monto:i.monto, raw:i };
-      });
-  },[data]);
+  const filas = useMemo(()=> data
+    .slice()
+    .map(i=>{
+      const meses = Array.isArray(i.detalleMeses) ? i.detalleMeses : [];
+      const etiqueta = meses
+        .slice().sort((a,b)=>(a.year-b.year)||(a.month-b.month))
+        .map(m=> `${MESES[m.month]} ${m.year}`)
+        .join(", ");
+      return { id:i.id, fecha:i.fecha, parcela:i.parcela, nombre:i.nombre, meses:etiqueta, monto:i.monto, raw:i };
+    })
+  ,[data]);
 
-  function eliminar(id){
+  async function eliminar(id){
     if (!window.confirm("¿Eliminar este ingreso?")) return;
-    const next = getIngresos().filter(x=>x.id!==id);
-    setIngresos(next);
-    setData(next);
+    await deleteIngreso(id);
   }
 
   return (
@@ -284,16 +255,18 @@ function IngresosTabla({ refreshKey }) {
         </table>
       </div>
 
-      {/* Modal de edición */}
       {editRow && (
         <EditIngresoModal
           record={editRow}
           onClose={()=>setEditRow(null)}
-          onSaved={(updated)=>{
-            // reemplazar en storage y refrescar tabla
-            const arr = getIngresos();
-            const idx = arr.findIndex(x=>x.id===updated.id);
-            if (idx>=0) { arr[idx]=updated; setIngresos(arr); setData(arr.slice()); }
+          onSaved={async (updated)=>{
+            await updateIngreso(updated.id, {
+              fecha: updated.fecha,
+              parcela: String(updated.parcela),
+              nombre: updated.nombre,
+              monto: Number(updated.monto),
+              detalleMeses: updated.detalleMeses
+            });
             setEditRow(null);
           }}
         />
@@ -302,7 +275,7 @@ function IngresosTabla({ refreshKey }) {
   );
 }
 
-// === MODAL para editar un ingreso ===
+/* Modal editar ingreso */
 function EditIngresoModal({ record, onClose, onSaved }) {
   const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
   const yNow = new Date().getFullYear();
@@ -439,8 +412,6 @@ function EditIngresoModal({ record, onClose, onSaved }) {
   );
 }
 
-
-
 /*********************** Egreso (categorías + agregar) ************************/
 const DEFAULT_CATS=["Seguridad","Mantencion","Camino","Porton","Electricidad","Compras"];
 function EgresoForm({ onAdd }){
@@ -473,16 +444,13 @@ function EgresoForm({ onAdd }){
     const m=parseMontoCLP(form.monto); if(!m||m<=0) e.monto="El monto debe ser mayor a 0";
     setErrores(e); return Object.keys(e).length===0;
   }
-  function onSubmit(ev){
+  async function onSubmit(ev){
     ev.preventDefault(); if(!validar()) return;
     const egreso={
       fecha:form.fecha, categoria:form.categoria, descripcion:form.descripcion.trim(),
-      monto:parseMontoCLP(form.monto), creadoEn:new Date().toISOString(), id:crypto.randomUUID?.()??String(Date.now())
+      monto:parseMontoCLP(form.monto), creadoEn:new Date().toISOString()
     };
-    try{
-      const prev=JSON.parse(localStorage.getItem('egresos')||'[]');
-      localStorage.setItem('egresos', JSON.stringify([egreso, ...prev]));
-    }catch{}
+    await addEgreso(egreso);   // <-- Firestore
     onAdd?.(egreso);
     setForm(f=>({ ...f, descripcion:"", monto:"" }));
   }
@@ -524,8 +492,7 @@ function EgresoForm({ onAdd }){
 }
 
 /*********************** Tabla Histórica de Egresos ************************/
-// === TABLA DE EGRESOS (con Editar/Eliminar) ===
-function EgresosTabla({ refreshKey }) {
+function EgresosTabla() {
   const [data,setData]=useState([]);
   const [editRow, setEditRow] = useState(null);
 
@@ -533,7 +500,10 @@ function EgresosTabla({ refreshKey }) {
     new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0})
       .format(typeof n==="number" ? n : parseInt(String(n).replace(/[^\d-]/g,"")||"0",10));
 
-  useEffect(()=>{ setData(getEgresos()); },[refreshKey]);
+  useEffect(()=>{
+    const off = watchEgresos(setData); // tiempo real
+    return () => off && off();
+  },[]);
 
   const filas = useMemo(()=> {
     const out = data.slice();
@@ -541,11 +511,9 @@ function EgresosTabla({ refreshKey }) {
     return out;
   },[data]);
 
-  function eliminar(id){
+  async function eliminar(id){
     if(!window.confirm("¿Eliminar este egreso?")) return;
-    const next = getEgresos().filter(x=>x.id!==id);
-    setEgresos(next);
-    setData(next);
+    await deleteEgreso(id);
   }
 
   return (
@@ -583,10 +551,13 @@ function EgresosTabla({ refreshKey }) {
         <EditEgresoModal
           record={editRow}
           onClose={()=>setEditRow(null)}
-          onSaved={(updated)=>{
-            const arr = getEgresos();
-            const idx = arr.findIndex(x=>x.id===updated.id);
-            if (idx>=0) { arr[idx]=updated; setEgresos(arr); setData(arr.slice()); }
+          onSaved={async (updated)=>{
+            await updateEgreso(updated.id, {
+              fecha: updated.fecha,
+              categoria: updated.categoria,
+              descripcion: updated.descripcion,
+              monto: Number(updated.monto)
+            });
             setEditRow(null);
           }}
         />
@@ -595,7 +566,7 @@ function EgresosTabla({ refreshKey }) {
   );
 }
 
-// === MODAL para editar un egreso ===
+/* Modal editar egreso */
 function EditEgresoModal({ record, onClose, onSaved }) {
   const [fecha, setFecha] = useState(record.fecha);
   const [categoria, setCategoria] = useState(record.categoria||"");
@@ -653,4 +624,3 @@ function EditEgresoModal({ record, onClose, onSaved }) {
     </div>
   );
 }
-
