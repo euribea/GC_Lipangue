@@ -17,14 +17,13 @@ export default function App() {
           >
             Dashboard
           </NavLink>
-          <NavLink
-            to="/movimientos"
-            className={({isActive}) =>
-              `px-3 py-2 rounded-xl ${isActive ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-100"}`
-            }
+          {/* Movimientos ahora con <a> para forzar carga completa */}
+          <a
+            href="/movimientos"
+            className="px-3 py-2 rounded-xl text-gray-700 hover:bg-gray-100"
           >
             Movimientos
-          </NavLink>
+          </a>
         </nav>
       </header>
 
